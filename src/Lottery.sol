@@ -3,12 +3,14 @@ pragma solidity 0.8.19;
 
 import {VRFConsumerBaseV2Plus} from "@chainlink/contracts/src/v0.8/vrf/dev/VRFConsumerBaseV2Plus.sol";
 import {VRFV2PlusClient} from "@chainlink/contracts/src/v0.8/vrf/dev/libraries/VRFV2PlusClient.sol";
+import {AutomationCompatibleInterface} from "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 
-contract Lottery is VRFConsumerBaseV2Plus {
+contract Lottery is VRFConsumerBaseV2Plus, AutomationCompatibleInterface {
     /* errors */
     error InsufficientEntryFee();
     error TransferFailed();
     error LotteryNotOpen();
+    error UpkeepNotNeeded();
 
     /* types */
     enum LotteryState {
@@ -60,14 +62,30 @@ contract Lottery is VRFConsumerBaseV2Plus {
         emit PlayerJoined(msg.sender);
     }
 
-    // get a random num from Chainlink VRF
-    // pick a winner using that num
-    // automate this function call using Chainlink
+    // automate using Chainlink Automations
 
-    function pickWinner() external {
-        uint256 interval = block.timestamp - s_lastTimeStamp;
-        if (interval < LOTTERY_INTERVAL) {
-            revert();
+    function checkUpkeep(
+        bytes memory /* checkData */
+    )
+        public
+        view
+        override
+        returns (bool upkeepNeeded, bytes memory /* performData */)
+    {
+        bool isTime = (block.timestamp - s_lastTimeStamp) >= LOTTERY_INTERVAL;
+        bool isLotteryOpen = s_lotteryState == LotteryState.OPEN;
+        bool hasBalance = address(this).balance > 0;
+        bool hasPlayers = s_players.length > 0;
+
+        upkeepNeeded = isTime && isLotteryOpen && hasBalance && hasPlayers;
+
+        return (upkeepNeeded, "");
+    }
+
+    function performUpkeep(bytes calldata /*performData*/) external override {
+        (bool upkeepNeeded, ) = checkUpkeep("");
+        if (!upkeepNeeded) {
+            revert UpkeepNotNeeded();
         }
 
         VRFV2PlusClient.RandomWordsRequest memory request = VRFV2PlusClient
@@ -82,11 +100,11 @@ contract Lottery is VRFConsumerBaseV2Plus {
                 )
             });
 
-        uint256 requestId = s_vrfCoordinator.requestRandomWords(request);
+        s_vrfCoordinator.requestRandomWords(request);
     }
 
     function fulfillRandomWords(
-        uint256 requestId,
+        uint256 /*requestId*/,
         uint256[] calldata randomWords
     ) internal override {
         uint256 winningIndex = randomWords[0] % s_players.length;
